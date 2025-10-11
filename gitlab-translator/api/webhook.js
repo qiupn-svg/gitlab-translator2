@@ -1,67 +1,107 @@
-// /api/webhook.js
+import fetch from 'node-fetch';
 
-// 这是一个 Vercel Serverless Function 模板
+// 1. 你的 GitLab Webhook Secret Token 
+// 已根据你的要求，将密钥直接写入代码中。
+const GITLAB_SECRET_TOKEN = 'aoisdj-123nkad-98asd-bkasd9';
+
+// 2. 你的产品工作流的目标 URL (固定值)
+const TARGET_WEBHOOK_URL = 'https://insight-api.airdroid.com/api/v1/workflow/exe/k1BJTv6MYL8104PXr9GWRIJJSBTcj341187CXRT5nZRoC27bRT_emMU6CNqJgo0pHNZutpccMfn9gC9tAyXL6w';
+
+
 export default async function handler(req, res) {
-  // --- 安全性检查 (可选但推荐) ---
-  // 确保请求是 POST 方法
+  // --- 安全性校验 ---
+  // 只接受 POST 请求
   if (req.method !== 'POST') {
-    return res.status(405).json({ message: 'Method Not Allowed' });
+    return res.status(405).send('Method Not Allowed');
   }
 
-  // --- 1. 从 GitLab 接收并解析数据 ---
-  const gitlabPayload = req.body;
+  // 验证 GitLab Secret Token
+  const token = req.headers['x-gitlab-token'];
+  if (token !== GITLAB_SECRET_TOKEN) {
+    console.warn(`Unauthorized access attempt with token: ${token}`); // 在日志中记录错误的 token，便于排查
+    return res.status(401).send('Unauthorized: Invalid Token');
+  }
 
   try {
-    // --- 2. 提取你需要的信息 ---
-    // 这里我们提取之前讨论过的关键信息
-    const updaterName = gitlabPayload.user_name || '未知用户';
-    const projectName = gitlabPayload.project ? gitlabPayload.project.name : '未知项目';
+    const body = req.body;
     
-    // 安全地获取提交信息和文件列表
-    const latestCommit = gitlabPayload.commits && gitlabPayload.commits[0] ? gitlabPayload.commits[0] : {};
-    const commitMessage = latestCommit.message || '没有提交信息';
-    const modifiedFiles = latestCommit.modified || [];
-    const addedFiles = latestCommit.added || [];
+    // --- 数据转换和扁平化 ---
+    // 创建一个空对象，用于存放扁平化后的数据
+    let flatPayload = {};
 
-    // --- 3. 转换成你的工作流产品要求的格式 ---
-    // !!! 这是最关键的一步，你需要根据你的产品 API 文档来构建这个对象 !!!
-    // 假设你的工作流产品需要这样的格式：
-    // { "event_source": "gitlab", "user": "张三", "details": "...", "files_changed": [...] }
-    const workflowPayload = {
-      event_source: "gitlab-prd-update",
-      user: updaterName,
-      project: projectName,
-      details: commitMessage, // 将提交信息作为详情
-      files_changed: [...addedFiles, ...modifiedFiles] // 合并新增和修改的文件列表
+    // 提取通用字段
+    flatPayload.object_kind = body.object_kind;
+    flatPayload.user_name = body.user?.name;
+    flatPayload.user_email = body.user?.email;
+    flatPayload.project_name = body.project?.name;
+    flatPayload.project_web_url = body.project?.web_url;
+
+    // 根据事件类型 (object_kind) 提取特定字段
+    const eventType = body.object_kind;
+
+    if (eventType === 'push') {
+      // Push 事件
+      flatPayload.ref = body.ref;
+      if (body.commits && body.commits.length > 0) {
+        // 只提取第一个 commit 的信息
+        const firstCommit = body.commits[0];
+        flatPayload.commits0_id = firstCommit.id;
+        flatPayload.commits0_message = firstCommit.message;
+        flatPayload.commits0_url = firstCommit.url;
+        flatPayload.commits0_author_name = firstCommit.author?.name;
+        // 将数组转换为逗号分隔的字符串，并处理空数组的情况
+        flatPayload.commits0_added = firstCommit.added?.join(', ') || '';
+        flatPayload.commits0_modified = firstCommit.modified?.join(', ') || '';
+        flatPayload.commits0_removed = firstCommit.removed?.join(', ') || '';
+      }
+    } else if (eventType === 'note') {
+      // 评论事件 (Note)
+      flatPayload.note_body = body.object_attributes?.note;
+      flatPayload.note_url = body.object_attributes?.url;
+      flatPayload.noteable_type = body.object_attributes?.noteable_type; // e.g., "MergeRequest", "Commit", "Issue"
+    } else if (eventType === 'merge_request') {
+      // 合并请求事件 (Merge Request)
+      const mr = body.object_attributes;
+      flatPayload.mr_title = mr?.title;
+      flatPayload.mr_description = mr?.description;
+      flatPayload.mr_state = mr?.state; // e.g., "opened", "merged", "closed"
+      flatPayload.mr_action = mr?.action; // e.g., "open", "update", "merge"
+      flatPayload.mr_url = mr?.url;
+      flatPayload.mr_source_branch = mr?.source_branch;
+      flatPayload.mr_target_branch = mr?.target_branch;
+    }
+
+    // --- 按照你的 API 要求封装数据 ---
+    // 将所有扁平化后的数据放入 "Input" 对象中
+    const finalApiPayload = {
+      Input: flatPayload
     };
 
-    // --- 4. 调用你的工作流产品的 API ---
-    const workflowApiUrl = 'https://insight-api.airdroid.com/api/v1/workflow/exe/k1B...'; // 换成你真正的 API 地址
+    // --- 发送数据到你的产品 API ---
+    console.log('Sending to AirDroid Insight API:', JSON.stringify(finalApiPayload, null, 2));
 
-    const response = await fetch(workflowApiUrl, {
+    const apiResponse = await fetch(TARGET_WEBHOOK_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        // 如果你的 API 需要密钥认证，在这里添加
-        // 'Authorization': 'Bearer YOUR_API_KEY' 
       },
-      body: JSON.stringify(workflowPayload)
+      body: JSON.stringify(finalApiPayload),
     });
 
-    // 检查调用是否成功
-    if (!response.ok) {
-      // 如果调用失败，记录错误并返回给 GitLab 一个错误状态
-      const errorText = await response.text();
-      console.error('Failed to call workflow API:', errorText);
-      return res.status(502).json({ message: 'Failed to trigger workflow', error: errorText });
+    if (!apiResponse.ok) {
+      // 如果 API 返回错误，记录下来
+      const errorText = await apiResponse.text();
+      console.error('Error from target API:', apiResponse.status, errorText);
+      throw new Error(`Target API responded with status ${apiResponse.status}`);
     }
 
-    // --- 成功响应 ---
-    // 向 GitLab 返回一个成功的响应，表示我们已经收到并处理了
-    res.status(200).json({ message: 'Webhook received and workflow triggered successfully!' });
+    // --- 向 GitLab 返回成功响应 ---
+    console.log('Successfully forwarded event.');
+    res.status(200).send('Event received and forwarded successfully.');
 
   } catch (error) {
-    console.error('Error processing webhook:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
+    console.error('An error occurred:', error.message);
+    // 向 GitLab 返回服务器错误
+    res.status(500).send('Internal Server Error');
   }
 }
