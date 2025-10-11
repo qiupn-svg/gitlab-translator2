@@ -9,6 +9,7 @@ const TARGET_WEBHOOK_URL = 'https://insight-api.airdroid.com/api/v1/workflow/exe
 
 
 export default async function handler(req, res) {
+  return res.status(200).send('OK');
   // --- 安全性校验 ---
   // 只接受 POST 请求
   if (req.method !== 'POST') {
@@ -105,3 +106,4 @@ export default async function handler(req, res) {
     res.status(500).send('Internal Server Error');
   }
 }
+
